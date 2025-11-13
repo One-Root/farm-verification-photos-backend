@@ -836,20 +836,6 @@ router.get("/admin/:status", async (req, res) => {
           hasNextPage: page < Math.ceil(totalCount / limit),
           hasPrevPage: page > 1,
         },
-        filters: {
-          applied: appliedFilters,
-          availableFilters: [
-            "userId",
-            "phone",
-            "fullName",
-            "cropName",
-            "village",
-            "taluk",
-            "district",
-            "fromDate",
-            "toDate",
-          ],
-        },
       },
     });
   } catch (error) {
