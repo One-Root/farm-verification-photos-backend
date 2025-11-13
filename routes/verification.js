@@ -35,7 +35,7 @@ const uploadToCloudinary = (fileBuffer, filename) => {
 };
 
 // ============================================
-// 1. SUBMIT VERIFICATION REQUEST (MODIFIED)
+// 1. SUBMIT VERIFICATION REQUEST (UPDATED WITH COMPLETE FLOW)
 // ============================================
 router.post("/submit", upload.array("photos", 3), async (req, res) => {
   try {
@@ -52,7 +52,6 @@ router.post("/submit", upload.array("photos", 3), async (req, res) => {
       moisture,
       willDry,
       location,
-      
     } = req.body;
 
     // Validate required fields
@@ -63,23 +62,57 @@ router.post("/submit", upload.array("photos", 3), async (req, res) => {
       });
     }
 
-    // CHECK: Does user already have a pending request?
-    const existingPendingRequest = await Verification.findOne({
-      userId,
-      status: 'pending'
-    });
+    // FLOW LOGIC: Check if user has existing request
+    // Find the LATEST verification request for this user
+    const existingRequest = await Verification.findOne({ userId }).sort({
+      createdAt: -1,
+    }); // Get most recent
 
-    if (existingPendingRequest) {
-      return res.status(409).json({
-        statusCode: 409,
-        message: "You already have a pending verification request. Please wait for review.",
-        data: {
-          existingRequestId: existingPendingRequest._id,
-          status: existingPendingRequest.status,
-          createdAt: existingPendingRequest.createdAt
-        }
-      });
+    if (existingRequest) {
+      const status = existingRequest.status;
+
+      // CASE 1: PENDING - Block new request
+      if (status === "pending") {
+        return res.status(409).json({
+          statusCode: 409,
+          message: "Your request is under review by the support team.",
+          data: {
+            existingRequestId: existingRequest._id,
+            status: existingRequest.status,
+            createdAt: existingRequest.createdAt,
+            canSubmit: false,
+          },
+        });
+      }
+
+      // CASE 2: APPROVED - Block new request
+      if (status === "approved") {
+        return res.status(409).json({
+          statusCode: 409,
+          message: "Cannot submit new request. You are already verified.",
+          data: {
+            existingRequestId: existingRequest._id,
+            status: existingRequest.status,
+            approvedAt: existingRequest.reviewedAt,
+            canSubmit: false,
+          },
+        });
+      }
+
+      // CASE 3: REJECTED - Allow new request (will create new record below)
+      if (status === "rejected") {
+        console.log(
+          `User ${userId} has rejected request. Allowing new submission (will create new record).`
+        );
+        // Continue to create new record - don't return here
+      }
     }
+
+    // ============================================
+    // If we reach here, either:
+    // 1. No existing request found (new user)
+    // 2. Latest request is REJECTED (create new record)
+    // ============================================
 
     // Parse location
     const parsedLocation = JSON.parse(location);
@@ -98,15 +131,18 @@ router.post("/submit", upload.array("photos", 3), async (req, res) => {
     );
 
     const cloudinaryResults = await Promise.all(uploadPromises);
-    
+
     const photos = cloudinaryResults.map((result) => ({
       url: result.secure_url,
-      status: 'pending'
+      status: "pending",
     }));
 
     console.log("Photos uploaded to Cloudinary:", photos);
 
-    // Create verification document
+    // ============================================
+    // CREATE NEW VERIFICATION RECORD
+    // Important: This creates a NEW record, doesn't update existing
+    // ============================================
     const verification = new Verification({
       userId,
       cropName,
@@ -124,11 +160,19 @@ router.post("/submit", upload.array("photos", 3), async (req, res) => {
         type: "Point",
         coordinates: [parsedLocation.lng, parsedLocation.lat],
       },
+      status: "pending", // New request always starts as pending
     });
 
     await verification.save();
 
-    console.log("Verification saved to MongoDB:", verification._id);
+    console.log("New verification created:", verification._id);
+
+    // Log if this was a re-submission after rejection
+    if (existingRequest && existingRequest.status === "rejected") {
+      console.log(
+        `New request created for userId ${userId} after previous rejection (ID: ${existingRequest._id})`
+      );
+    }
 
     res.status(200).json({
       statusCode: 200,
@@ -139,6 +183,8 @@ router.post("/submit", upload.array("photos", 3), async (req, res) => {
         photos: verification.photos,
         status: verification.status,
         createdAt: verification.createdAt,
+        isResubmission:
+          existingRequest && existingRequest.status === "rejected",
       },
     });
   } catch (error) {
@@ -151,18 +197,17 @@ router.post("/submit", upload.array("photos", 3), async (req, res) => {
   }
 });
 
-
 router.get("/admin/pending", async (req, res) => {
   try {
     const { page = 1, limit = 10 } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    const pendingRequests = await Verification.find({ status: 'pending' })
+    const pendingRequests = await Verification.find({ status: "pending" })
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
 
-    const totalCount = await Verification.countDocuments({ status: 'pending' });
+    const totalCount = await Verification.countDocuments({ status: "pending" });
 
     res.json({
       statusCode: 200,
@@ -173,9 +218,9 @@ router.get("/admin/pending", async (req, res) => {
           currentPage: parseInt(page),
           totalPages: Math.ceil(totalCount / parseInt(limit)),
           totalRequests: totalCount,
-          requestsPerPage: parseInt(limit)
-        }
-      }
+          requestsPerPage: parseInt(limit),
+        },
+      },
     });
   } catch (error) {
     console.error("Error fetching pending requests:", error);
@@ -204,7 +249,7 @@ router.patch("/:id/review-images", async (req, res) => {
 
     // Find verification request
     const verification = await Verification.findById(id);
-    
+
     if (!verification) {
       return res.status(404).json({
         statusCode: 404,
@@ -213,7 +258,7 @@ router.patch("/:id/review-images", async (req, res) => {
     }
 
     // Check if already finalized
-    if (verification.status !== 'pending') {
+    if (verification.status !== "pending") {
       return res.status(400).json({
         statusCode: 400,
         message: `Cannot review images. Request is already ${verification.status}`,
@@ -221,18 +266,22 @@ router.patch("/:id/review-images", async (req, res) => {
     }
 
     // Update photo statuses
-    verification.photos.forEach(photo => {
+    verification.photos.forEach((photo) => {
       if (approvedPhotoIds.includes(photo._id.toString())) {
-        photo.status = 'approved';
+        photo.status = "approved";
       } else {
-        photo.status = 'rejected';
+        photo.status = "rejected";
       }
     });
 
     await verification.save();
 
-    const approvedCount = verification.photos.filter(p => p.status === 'approved').length;
-    const rejectedCount = verification.photos.filter(p => p.status === 'rejected').length;
+    const approvedCount = verification.photos.filter(
+      (p) => p.status === "approved"
+    ).length;
+    const rejectedCount = verification.photos.filter(
+      (p) => p.status === "rejected"
+    ).length;
 
     res.json({
       statusCode: 200,
@@ -243,11 +292,10 @@ router.patch("/:id/review-images", async (req, res) => {
         summary: {
           total: verification.photos.length,
           approved: approvedCount,
-          rejected: rejectedCount
-        }
-      }
+          rejected: rejectedCount,
+        },
+      },
     });
-
   } catch (error) {
     console.error("Error reviewing images:", error);
     res.status(500).json({
@@ -269,7 +317,7 @@ router.patch("/:id/finalize", async (req, res) => {
     const { status, rejectionReason, reviewedBy, locationType } = req.body; // 🆕 Added locationType
 
     // Validate status
-    if (!status || !['approved', 'rejected'].includes(status)) {
+    if (!status || !["approved", "rejected"].includes(status)) {
       return res.status(400).json({
         statusCode: 400,
         message: "Status must be 'approved' or 'rejected'",
@@ -277,7 +325,7 @@ router.patch("/:id/finalize", async (req, res) => {
     }
 
     // If rejecting, reason is required
-    if (status === 'rejected' && !rejectionReason) {
+    if (status === "rejected" && !rejectionReason) {
       return res.status(400).json({
         statusCode: 400,
         message: "Rejection reason is required when rejecting a request",
@@ -285,15 +333,16 @@ router.patch("/:id/finalize", async (req, res) => {
     }
 
     // 🆕 If approving, locationType is required
-    if (status === 'approved' && !locationType) {
+    if (status === "approved" && !locationType) {
       return res.status(400).json({
         statusCode: 400,
-        message: "locationType (farm/village) is required when approving a request",
+        message:
+          "locationType (farm/village) is required when approving a request",
       });
     }
 
     // Validate locationType if provided
-    if (locationType && !['farm', 'village'].includes(locationType)) {
+    if (locationType && !["farm", "village"].includes(locationType)) {
       return res.status(400).json({
         statusCode: 400,
         message: "locationType must be 'farm' or 'village'",
@@ -302,7 +351,7 @@ router.patch("/:id/finalize", async (req, res) => {
 
     // Find verification request
     const verification = await Verification.findById(id);
-    
+
     if (!verification) {
       return res.status(404).json({
         statusCode: 404,
@@ -311,7 +360,7 @@ router.patch("/:id/finalize", async (req, res) => {
     }
 
     // Check if already finalized
-    if (verification.status !== 'pending') {
+    if (verification.status !== "pending") {
       return res.status(400).json({
         statusCode: 400,
         message: `Request is already ${verification.status}`,
@@ -319,13 +368,16 @@ router.patch("/:id/finalize", async (req, res) => {
     }
 
     // If approving, check if at least one photo is approved
-    if (status === 'approved') {
-      const approvedPhotos = verification.photos.filter(p => p.status === 'approved');
-      
+    if (status === "approved") {
+      const approvedPhotos = verification.photos.filter(
+        (p) => p.status === "approved"
+      );
+
       if (approvedPhotos.length === 0) {
         return res.status(400).json({
           statusCode: 400,
-          message: "Cannot approve request. At least one photo must be approved first.",
+          message:
+            "Cannot approve request. At least one photo must be approved first.",
         });
       }
     }
@@ -333,17 +385,17 @@ router.patch("/:id/finalize", async (req, res) => {
     // Update verification status
     verification.status = status;
     verification.reviewedAt = new Date();
-    
+
     if (reviewedBy) {
       verification.reviewedBy = reviewedBy;
     }
-    
-    if (status === 'rejected') {
+
+    if (status === "rejected") {
       verification.rejectionReason = rejectionReason;
     }
 
     // 🆕 Set location type when approving
-    if (status === 'approved' && locationType) {
+    if (status === "approved" && locationType) {
       verification.location.locationType = locationType;
     }
 
@@ -360,10 +412,9 @@ router.patch("/:id/finalize", async (req, res) => {
         reviewedAt: verification.reviewedAt,
         reviewedBy: verification.reviewedBy,
         locationType: verification.location.locationType, // 🆕 Return location type
-        photos: verification.photos
-      }
+        photos: verification.photos,
+      },
     });
-
   } catch (error) {
     console.error("Error finalizing verification:", error);
     res.status(500).json({
@@ -377,7 +428,7 @@ router.patch("/:id/finalize", async (req, res) => {
 // Add this NEW route after the finalize route
 
 // ============================================
-// 4.5 UPDATE LOCATION TYPE (ADMIN)
+// 4.5 UPDATE LOCATION TYPE
 // ============================================
 router.patch("/:id/update-location-type", async (req, res) => {
   try {
@@ -385,7 +436,7 @@ router.patch("/:id/update-location-type", async (req, res) => {
     const { locationType } = req.body;
 
     // Validate locationType
-    if (!locationType || !['farm', 'village'].includes(locationType)) {
+    if (!locationType || !["farm", "village"].includes(locationType)) {
       return res.status(400).json({
         statusCode: 400,
         message: "locationType must be 'farm' or 'village'",
@@ -394,7 +445,7 @@ router.patch("/:id/update-location-type", async (req, res) => {
 
     // Find verification request
     const verification = await Verification.findById(id);
-    
+
     if (!verification) {
       return res.status(404).json({
         statusCode: 404,
@@ -412,10 +463,9 @@ router.patch("/:id/update-location-type", async (req, res) => {
       data: {
         id: verification._id,
         locationType: verification.location.locationType,
-        coordinates: verification.location.coordinates
-      }
+        coordinates: verification.location.coordinates,
+      },
     });
-
   } catch (error) {
     console.error("Error updating location type:", error);
     res.status(500).json({
@@ -441,17 +491,19 @@ router.get("/:id", async (req, res) => {
     // 🆕 Add photo summary
     const photoSummary = {
       total: verification.photos.length,
-      approved: verification.photos.filter(p => p.status === 'approved').length,
-      rejected: verification.photos.filter(p => p.status === 'rejected').length,
-      pending: verification.photos.filter(p => p.status === 'pending').length
+      approved: verification.photos.filter((p) => p.status === "approved")
+        .length,
+      rejected: verification.photos.filter((p) => p.status === "rejected")
+        .length,
+      pending: verification.photos.filter((p) => p.status === "pending").length,
     };
 
     res.json({
       statusCode: 200,
       data: {
         ...verification.toObject(),
-        photoSummary
-      }
+        photoSummary,
+      },
     });
   } catch (error) {
     res.status(500).json({
@@ -472,17 +524,17 @@ router.get("/user/:userId", async (req, res) => {
     }).sort({ createdAt: -1 });
 
     // 🆕 Add summary for each verification
-    const enhancedVerifications = verifications.map(v => {
+    const enhancedVerifications = verifications.map((v) => {
       const photoSummary = {
         total: v.photos.length,
-        approved: v.photos.filter(p => p.status === 'approved').length,
-        rejected: v.photos.filter(p => p.status === 'rejected').length,
-        pending: v.photos.filter(p => p.status === 'pending').length
+        approved: v.photos.filter((p) => p.status === "approved").length,
+        rejected: v.photos.filter((p) => p.status === "rejected").length,
+        pending: v.photos.filter((p) => p.status === "pending").length,
       };
 
       return {
         ...v.toObject(),
-        photoSummary
+        photoSummary,
       };
     });
 
@@ -500,15 +552,16 @@ router.get("/user/:userId", async (req, res) => {
 });
 
 // ============================================
-// 7. GET USER'S CURRENT STATUS (NEW)
+// 7. GET USER'S CURRENT STATUS (UPDATED)
 // ============================================
 router.get("/user/:userId/current-status", async (req, res) => {
   try {
     const { userId } = req.params;
 
     // Find most recent verification
-    const latestVerification = await Verification.findOne({ userId })
-      .sort({ createdAt: -1 });
+    const latestVerification = await Verification.findOne({ userId }).sort({
+      createdAt: -1,
+    });
 
     if (!latestVerification) {
       return res.json({
@@ -516,35 +569,66 @@ router.get("/user/:userId/current-status", async (req, res) => {
         message: "No verification requests found",
         data: {
           hasVerification: false,
-          canSubmit: true
-        }
+          canSubmit: true,
+          status: null,
+        },
       });
     }
 
     const photoSummary = {
       total: latestVerification.photos.length,
-      approved: latestVerification.photos.filter(p => p.status === 'approved').length,
-      rejected: latestVerification.photos.filter(p => p.status === 'rejected').length,
-      pending: latestVerification.photos.filter(p => p.status === 'pending').length
+      approved: latestVerification.photos.filter((p) => p.status === "approved")
+        .length,
+      rejected: latestVerification.photos.filter((p) => p.status === "rejected")
+        .length,
+      pending: latestVerification.photos.filter((p) => p.status === "pending")
+        .length,
     };
+
+    // ============================================
+    // DETERMINE IF USER CAN SUBMIT NEW REQUEST
+    // ============================================
+    let canSubmit = false;
+    let blockMessage = null;
+
+    switch (latestVerification.status) {
+      case "pending":
+        canSubmit = false;
+        blockMessage = "Your request is under review by the support team.";
+        break;
+
+      case "approved":
+        canSubmit = false;
+        blockMessage = "Cannot submit new request. You are already verified.";
+        break;
+
+      case "rejected":
+        canSubmit = true;
+        blockMessage = null;
+        break;
+
+      default:
+        canSubmit = false;
+        blockMessage = "Unknown status. Please contact support.";
+    }
 
     res.json({
       statusCode: 200,
       message: "Current status fetched successfully",
       data: {
         hasVerification: true,
-        canSubmit: latestVerification.status !== 'pending',
+        canSubmit: canSubmit,
+        blockMessage: blockMessage,
         verification: {
           id: latestVerification._id,
           status: latestVerification.status,
           rejectionReason: latestVerification.rejectionReason,
           photoSummary,
           createdAt: latestVerification.createdAt,
-          reviewedAt: latestVerification.reviewedAt
-        }
-      }
+          reviewedAt: latestVerification.reviewedAt,
+        },
+      },
     });
-
   } catch (error) {
     res.status(500).json({
       statusCode: 500,
@@ -555,14 +639,15 @@ router.get("/user/:userId/current-status", async (req, res) => {
 });
 
 // ============================================
-// GET /api/verifications/admin/:status?page=1&limit=100
-// Supported statuses: pending | approved | rejected
-// Optional query filters: district, taluk, userId, fromDate, toDate
+// ENHANCED: GET /api/verifications/admin/:status
+// Supported statuses: pending | approved | rejected | all
 // ============================================
+
 router.get("/admin/:status", async (req, res) => {
   try {
     const { status } = req.params;
-    const allowed = ["pending", "approved", "rejected"];
+    const allowed = ["pending", "approved", "rejected", "all"];
+
     if (!allowed.includes(status)) {
       return res.status(400).json({
         statusCode: 400,
@@ -570,35 +655,95 @@ router.get("/admin/:status", async (req, res) => {
       });
     }
 
-    // pagination
+    // PAGINATION
+
     const page = Math.max(1, parseInt(req.query.page || "1", 10));
-    const limit = Math.max(1, parseInt(req.query.limit || "10", 10));
+    const limit = Math.max(
+      1,
+      Math.min(100, parseInt(req.query.limit || "10", 10))
+    ); // Max 100 per page
     const skip = (page - 1) * limit;
 
-    // optional filters
-    const { district, taluk, userId, fromDate, toDate } = req.query;
-    const query = { status };
+    // BUILD QUERY WITH FILTERS
 
-    if (district) query.district = String(district);
-    if (taluk) query.taluk = String(taluk);
-    if (userId) query.userId = String(userId);
+    const query = {};
 
-    // date range filter on createdAt (if provided)
-    if (fromDate || toDate) {
-      query.createdAt = {};
-      if (fromDate) {
-        const f = new Date(String(fromDate));
-        if (!isNaN(f.getTime())) query.createdAt.$gte = f;
-      }
-      if (toDate) {
-        const t = new Date(String(toDate));
-        if (!isNaN(t.getTime())) query.createdAt.$lte = t;
-      }
-      // remove createdAt if empty (invalid dates)
-      if (Object.keys(query.createdAt).length === 0) delete query.createdAt;
+    // Status filter (skip if 'all')
+    if (status !== "all") {
+      query.status = status;
     }
 
-    // fetch total and paginated documents
+    // Extract filter parameters
+    const {
+      userId,
+      phone,
+      fullName,
+      cropName,
+      village,
+      taluk,
+      district,
+      fromDate,
+      toDate,
+    } = req.query;
+
+    // EXACT MATCH FILTERS
+    if (userId) {
+      query.userId = String(userId).trim();
+    }
+
+    if (district) {
+      query.district = new RegExp(`^${String(district).trim()}$`, "i"); // Case-insensitive exact
+    }
+
+    if (taluk) {
+      query.taluk = new RegExp(`^${String(taluk).trim()}$`, "i"); // Case-insensitive exact
+    }
+
+    // PARTIAL MATCH FILTERS (Case-insensitive)
+    if (phone) {
+      query.phone = new RegExp(String(phone).trim(), "i");
+    }
+
+    if (fullName) {
+      query.fullName = new RegExp(String(fullName).trim(), "i");
+    }
+
+    if (cropName) {
+      query.cropName = new RegExp(String(cropName).trim(), "i");
+    }
+
+    if (village) {
+      query.village = new RegExp(String(village).trim(), "i");
+    }
+
+    // DATE RANGE FILTER
+    if (fromDate || toDate) {
+      query.createdAt = {};
+
+      if (fromDate) {
+        const f = new Date(String(fromDate));
+        if (!isNaN(f.getTime())) {
+          query.createdAt.$gte = f;
+        }
+      }
+
+      if (toDate) {
+        const t = new Date(String(toDate));
+        if (!isNaN(t.getTime())) {
+          // Set to end of day
+          t.setHours(23, 59, 59, 999);
+          query.createdAt.$lte = t;
+        }
+      }
+
+      // Remove createdAt if no valid dates
+      if (Object.keys(query.createdAt).length === 0) {
+        delete query.createdAt;
+      }
+    }
+
+    // EXECUTE QUERY
+
     const [totalCount, requests] = await Promise.all([
       Verification.countDocuments(query),
       Verification.find(query)
@@ -608,23 +753,48 @@ router.get("/admin/:status", async (req, res) => {
         .lean(),
     ]);
 
-    // enrich with photoSummary to match front-end expectations
+    // ENRICH RESPONSE WITH PHOTO SUMMARY
+
     const enriched = requests.map((v) => {
       const photoSummary = {
         total: Array.isArray(v.photos) ? v.photos.length : 0,
-        approved: Array.isArray(v.photos) ? v.photos.filter(p => p.status === "approved").length : 0,
-        rejected: Array.isArray(v.photos) ? v.photos.filter(p => p.status === "rejected").length : 0,
-        pending: Array.isArray(v.photos) ? v.photos.filter(p => p.status === "pending").length : 0,
+        approved: Array.isArray(v.photos)
+          ? v.photos.filter((p) => p.status === "approved").length
+          : 0,
+        rejected: Array.isArray(v.photos)
+          ? v.photos.filter((p) => p.status === "rejected").length
+          : 0,
+        pending: Array.isArray(v.photos)
+          ? v.photos.filter((p) => p.status === "pending").length
+          : 0,
       };
+
       return {
         ...v,
         photoSummary,
       };
     });
 
+    // RESPONSE WITH APPLIED FILTERS INFO
+
+    const appliedFilters = {};
+    if (userId) appliedFilters.userId = userId;
+    if (phone) appliedFilters.phone = phone;
+    if (fullName) appliedFilters.fullName = fullName;
+    if (cropName) appliedFilters.cropName = cropName;
+    if (village) appliedFilters.village = village;
+    if (taluk) appliedFilters.taluk = taluk;
+    if (district) appliedFilters.district = district;
+    if (fromDate) appliedFilters.fromDate = fromDate;
+    if (toDate) appliedFilters.toDate = toDate;
+
     res.json({
       statusCode: 200,
-      message: `${status.charAt(0).toUpperCase() + status.slice(1)} requests fetched successfully`,
+      message: `${
+        status === "all"
+          ? "All"
+          : status.charAt(0).toUpperCase() + status.slice(1)
+      } requests fetched successfully`,
       data: {
         requests: enriched,
         pagination: {
@@ -632,11 +802,27 @@ router.get("/admin/:status", async (req, res) => {
           totalPages: Math.ceil(totalCount / limit),
           totalRequests: totalCount,
           requestsPerPage: limit,
+          hasNextPage: page < Math.ceil(totalCount / limit),
+          hasPrevPage: page > 1,
+        },
+        filters: {
+          applied: appliedFilters,
+          availableFilters: [
+            "userId",
+            "phone",
+            "fullName",
+            "cropName",
+            "village",
+            "taluk",
+            "district",
+            "fromDate",
+            "toDate",
+          ],
         },
       },
     });
   } catch (error) {
-    console.error("Error fetching admin verifications by status:", error);
+    console.error("Error fetching admin verifications:", error);
     res.status(500).json({
       statusCode: 500,
       message: "Error fetching requests",
@@ -644,6 +830,5 @@ router.get("/admin/:status", async (req, res) => {
     });
   }
 });
-
 
 module.exports = router;
