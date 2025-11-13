@@ -312,10 +312,9 @@ router.patch("/:id/review-images", async (req, res) => {
   }
 });
 
-// ============================================
+
 // 4. FINALIZE VERIFICATION DECISION
-// ============================================
-// Update the finalize route to accept locationType
+
 
 router.patch("/:id/finalize", async (req, res) => {
   try {
@@ -850,17 +849,6 @@ router.get("/admin/:status", async (req, res) => {
             "fromDate",
             "toDate",
           ],
-          filterTypes: {
-            userId: "exact match",
-            phone: "partial match (case-insensitive)",
-            fullName: "partial match (case-insensitive)",
-            cropName: "partial match (case-insensitive)",
-            village: "partial match (case-insensitive)",
-            taluk: "partial match (case-insensitive)",
-            district: "partial match (case-insensitive)",
-            fromDate: "date range (format: YYYY-MM-DD)",
-            toDate: "date range (format: YYYY-MM-DD)",
-          },
         },
       },
     });
