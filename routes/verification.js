@@ -607,6 +607,7 @@ router.patch("/:id/review-images", async (req, res) => {
 // ============================================
 // 6. FINALIZE VERIFICATION (Specific action on :id)
 // ============================================
+
 router.patch("/:id/finalize", async (req, res) => {
   try {
     const { id } = req.params;
@@ -677,20 +678,20 @@ router.patch("/:id/finalize", async (req, res) => {
       });
     }
 
-    if (status === "approved") {
-      const approvedPhotos = verification.photos.filter(
-        (p) => p.status === "approved"
-      );
+    // Get approved photos
+    const approvedPhotos = verification.photos.filter(
+      (p) => p.status === "approved"
+    );
 
-      if (approvedPhotos.length === 0) {
-        return res.status(400).json({
-          statusCode: 400,
-          message:
-            "Cannot approve request. At least one photo must be approved first.",
-        });
-      }
+    if (status === "approved" && approvedPhotos.length === 0) {
+      return res.status(400).json({
+        statusCode: 400,
+        message:
+          "Cannot approve request. At least one photo must be approved first.",
+      });
     }
 
+    // Update verification status
     verification.status = status;
     verification.reviewedAt = new Date();
 
@@ -711,6 +712,42 @@ router.patch("/:id/finalize", async (req, res) => {
 
     await verification.save();
 
+    // 🆕 PATCH CROP API - Update images and location if there are approved photos
+    let cropUpdateResult = null;
+    if (approvedPhotos.length > 0) {
+      try {
+        const updatePayload = {
+          images: approvedPhotos.map(photo => photo.url),
+          coordinates: [
+            verification.location.coordinates[0], // longitude
+            verification.location.coordinates[1]  // latitude
+          ]
+        };
+
+        console.log(`📤 Patching crop ${verification.cropId} with approved images and location:`, updatePayload);
+
+        const cropUpdateResponse = await axios.patch(
+          `${CROP_API_URL}/crop/${verification.cropId}/images-location`,
+          updatePayload,
+          {
+            headers: {
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+
+        cropUpdateResult = cropUpdateResponse.data;
+        console.log(`✅ Successfully updated crop ${verification.cropId}:`, cropUpdateResult);
+
+      } catch (cropUpdateError) {
+        console.error(`❌ Error updating crop ${verification.cropId}:`, cropUpdateError.message);
+        
+        // Log the error but don't fail the entire finalization
+        // The verification is still saved successfully
+        console.warn(`⚠️ Verification finalized but crop update failed for cropId: ${verification.cropId}`);
+      }
+    }
+
     res.json({
       statusCode: 200,
       message: `Verification request ${status} successfully`,
@@ -725,6 +762,7 @@ router.patch("/:id/finalize", async (req, res) => {
         reviewedBy: verification.reviewedBy,
         locationType: verification.location.locationType,
         photos: verification.photos,
+        cropUpdateResult: cropUpdateResult, // Include the crop API response
       },
     });
   } catch (error) {
