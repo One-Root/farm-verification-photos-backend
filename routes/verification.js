@@ -18,7 +18,7 @@ async function fetchCropData(cropId) {
   try {
     const response = await axios.get(`${CROP_API_URL}/crop/get-crop-by-id/${cropId}`);
     if (response.data.code === 200) {
-      return response.data.data;
+      return response.data;
     }
     throw new Error(response.data.message || "Failed to fetch crop data");
   } catch (error) {
