@@ -549,14 +549,18 @@ router.get("/user/:userId", async (req, res) => {
 router.patch("/:id/review-images", async (req, res) => {
   try {
     const { id } = req.params;
-    const { approvedPhotoIds } = req.body;
+    const { approvedPhotoIds, rejectedPhotoIds } = req.body;
 
-    if (!approvedPhotoIds || !Array.isArray(approvedPhotoIds)) {
+    // Validate input
+    if (!Array.isArray(approvedPhotoIds)) {
       return res.status(400).json({
         statusCode: 400,
         message: "approvedPhotoIds must be an array",
       });
     }
+
+    // rejectedPhotoIds is optional but should be an array if provided
+    const rejectedIds = Array.isArray(rejectedPhotoIds) ? rejectedPhotoIds : [];
 
     const verification = await Verification.findById(id);
 
@@ -574,12 +578,17 @@ router.patch("/:id/review-images", async (req, res) => {
       });
     }
 
+    // ✅ ONLY update photos that are explicitly approved or rejected
+    // Leave all other photos unchanged (they stay in their current status)
     verification.photos.forEach((photo) => {
-      if (approvedPhotoIds.includes(photo._id.toString())) {
+      const photoIdStr = photo._id.toString();
+      
+      if (approvedPhotoIds.includes(photoIdStr)) {
         photo.status = "approved";
-      } else {
-        photo.status = "pending";
+      } else if (rejectedIds.includes(photoIdStr)) {
+        photo.status = "rejected";
       }
+      // ✅ If photo is not in either array, don't change its status
     });
 
     await verification.save();
@@ -589,6 +598,9 @@ router.patch("/:id/review-images", async (req, res) => {
     ).length;
     const rejectedCount = verification.photos.filter(
       (p) => p.status === "rejected"
+    ).length;
+    const pendingCount = verification.photos.filter(
+      (p) => p.status === "pending"
     ).length;
 
     res.json({
@@ -601,6 +613,7 @@ router.patch("/:id/review-images", async (req, res) => {
           total: verification.photos.length,
           approved: approvedCount,
           rejected: rejectedCount,
+          pending: pendingCount,
         },
       },
     });
@@ -614,10 +627,8 @@ router.patch("/:id/review-images", async (req, res) => {
   }
 });
 
-// ============================================
-// 6. FINALIZE VERIFICATION (Specific action on :id)
-// ============================================
 
+// 6. FINALIZE VERIFICATION (Specific action on :id)
 router.patch("/:id/finalize", async (req, res) => {
   try {
     const { id } = req.params;
@@ -647,6 +658,16 @@ router.patch("/:id/finalize", async (req, res) => {
       'fake_or_manipulated',
       'incomplete_information',
       'suspicious_activity',
+      'photo_too_dark',
+      'photo_not_clear',
+      'photo_not_focused',
+      'partial_crop_visible',
+      'camera_angle_incorrect',
+      'photo_contains_obstructions',
+      'wrong_crop_uploaded',
+      'crop_stage_mismatch',
+      'crop_area_not_clear',
+      'crop_not_identifiable',
       'other'
     ];
 
@@ -722,7 +743,8 @@ router.patch("/:id/finalize", async (req, res) => {
 
     await verification.save();
 
-    // 🆕 PATCH CROP API - Update images and location if there are approved photos
+    // 🆕 UPDATED: PATCH CROP API - Update images and location if there are approved photos
+    // This now runs for BOTH approved and rejected verifications, as long as there are approved photos
     let cropUpdateResult = null;
     if (approvedPhotos.length > 0) {
       try {
@@ -734,7 +756,7 @@ router.patch("/:id/finalize", async (req, res) => {
           ]
         };
 
-        console.log(`📤 Patching crop ${verification.cropId} with approved images and location:`, updatePayload);
+        console.log(`📤 Patching crop ${verification.cropId} with approved images and location (Verification Status: ${status}):`, updatePayload);
 
         const cropUpdateResponse = await axios.patch(
           `${CROP_API_URL}/crop/${verification.cropId}/images-location`,
@@ -747,20 +769,22 @@ router.patch("/:id/finalize", async (req, res) => {
         );
 
         cropUpdateResult = cropUpdateResponse.data;
-        console.log(`✅ Successfully updated crop ${verification.cropId}:`, cropUpdateResult);
+        console.log(`✅ Successfully updated crop ${verification.cropId} with ${approvedPhotos.length} approved photo(s):`, cropUpdateResult);
 
       } catch (cropUpdateError) {
         console.error(`❌ Error updating crop ${verification.cropId}:`, cropUpdateError.message);
         
         // Log the error but don't fail the entire finalization
         // The verification is still saved successfully
-        console.warn(`⚠️ Verification finalized but crop update failed for cropId: ${verification.cropId}`);
+        console.warn(`⚠️ Verification finalized (${status}) but crop update failed for cropId: ${verification.cropId}`);
       }
+    } else {
+      console.log(`ℹ️ No approved photos found for verification ${verification._id}. Skipping crop API update.`);
     }
 
     res.json({
       statusCode: 200,
-      message: `Verification request ${status} successfully`,
+      message: `Verification request ${status} successfully${approvedPhotos.length > 0 ? ` and ${approvedPhotos.length} photo(s) updated in crop` : ''}`,
       data: {
         id: verification._id,
         userId: verification.userId,
@@ -773,7 +797,9 @@ router.patch("/:id/finalize", async (req, res) => {
         reviewedBy: verification.reviewedBy,
         locationType: verification.location.locationType,
         photos: verification.photos,
+        approvedPhotosCount: approvedPhotos.length,
         cropUpdateResult: cropUpdateResult, // Include the crop API response
+        cropUpdated: cropUpdateResult !== null, // Boolean flag to indicate if crop was updated
       },
     });
   } catch (error) {
