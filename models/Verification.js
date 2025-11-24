@@ -2,11 +2,21 @@
 const mongoose = require('mongoose');
 
 // Helper function to generate requestId
-const generateRequestId = () => {
-  const year = new Date().getFullYear();
-  const randomPart = Math.random().toString(36).substring(2, 8).toUpperCase();
-  return `OR-REQ-${year}-${randomPart}`;
+const generateRequestId = (district, taluk) => {
+  const now = new Date();
+
+  const d = district?.[0]?.toUpperCase() || "X";
+  const t = taluk?.[0]?.toUpperCase() || "X";
+
+  const yy = String(now.getFullYear()).slice(-2);             // last 2 digits of year
+  const HH = String(now.getHours()).padStart(2, "0");         // hour (00–23)
+  const MM = String(now.getMinutes()).padStart(2, "0");       // minute (00–59)
+
+  const rnd4 = Math.floor(1000 + Math.random() * 9000);       // random 4 digits
+
+  return `OR${d}${t}${yy}${HH}${MM}${rnd4}`;
 };
+
 
 const verificationSchema = new mongoose.Schema({
     requestId: { 
