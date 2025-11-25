@@ -5,19 +5,23 @@ const multer = require("multer");
 const axios = require("axios");
 const cloudinary = require("../config/cloudinary");
 const Verification = require("../models/Verification");
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
+const whatsappService = require("../services/WhatsappServices");
 
 const escapeRegex = (str) => {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 };
 
 // 🆕 ADDED: Crop API configuration
-const CROP_API_URL = process.env.CROP_API_URL || "https://markhet-internal-ngfs.onrender.com";
+const CROP_API_URL =
+  process.env.CROP_API_URL || "https://markhet-internal-ngfs.onrender.com";
 
 // 🆕 ADDED: Helper function to fetch crop data
 async function fetchCropData(cropId) {
   try {
-    const response = await axios.get(`${CROP_API_URL}/crop/get-crop-by-id/${cropId}`);
+    const response = await axios.get(
+      `${CROP_API_URL}/crop/get-crop-by-id/${cropId}`
+    );
     if (response.data.code === 200) {
       return response.data.data;
     }
@@ -27,7 +31,6 @@ async function fetchCropData(cropId) {
     throw error;
   }
 }
-
 
 // Configure multer
 const storage = multer.memoryStorage();
@@ -105,7 +108,9 @@ router.post("/submit", upload.array("photos", 3), async (req, res) => {
     const farmData = cropData.farm;
     const userData = cropData.farm.user;
 
-    console.log(`📍 Processing verification for userId: ${userId}, cropId: ${cropId}, cropName: ${cropName}`);
+    console.log(
+      `📍 Processing verification for userId: ${userId}, cropId: ${cropId}, cropName: ${cropName}`
+    );
 
     const existingRequest = await Verification.findOne({ cropId }).sort({
       createdAt: -1,
@@ -179,16 +184,21 @@ router.post("/submit", upload.array("photos", 3), async (req, res) => {
       village: village || farmData.village || "",
       taluk: taluk || farmData.taluk || "",
       district: district || farmData.district || "",
-      quantity: quantity || (cropData.quantity && cropData.measure 
-        ? `${cropData.quantity} ${cropData.measure}` 
-        : ""),
-      variety: variety || cropData.maizeVariety || cropData.otherVarietyName || "",
+      quantity:
+        quantity ||
+        (cropData.quantity && cropData.measure
+          ? `${cropData.quantity} ${cropData.measure}`
+          : ""),
+      variety:
+        variety || cropData.maizeVariety || cropData.otherVarietyName || "",
       moisture: moisture || cropData.moisturePercent?.toString() || "",
-      willDry: willDry || (cropData.willYouDryIt === true 
-        ? "Yes" 
-        : cropData.willYouDryIt === false 
-        ? "No" 
-        : ""),
+      willDry:
+        willDry ||
+        (cropData.willYouDryIt === true
+          ? "Yes"
+          : cropData.willYouDryIt === false
+          ? "No"
+          : ""),
     };
 
     const verification = new Verification({
@@ -218,7 +228,7 @@ router.post("/submit", upload.array("photos", 3), async (req, res) => {
         id: verification._id,
         userId: verification.userId,
         cropId: verification.cropId,
-        requestId: verification.requestId, 
+        requestId: verification.requestId,
         cropName: verification.cropName,
         photos: verification.photos,
         status: verification.status,
@@ -280,9 +290,9 @@ router.get("/admin/:status", async (req, res) => {
     } = req.query;
 
     if (requestId) {
-  const escapedRequestId = escapeRegex(String(requestId).trim());
-  query.requestId = new RegExp(escapedRequestId, "i");
-}
+      const escapedRequestId = escapeRegex(String(requestId).trim());
+      query.requestId = new RegExp(escapedRequestId, "i");
+    }
 
     if (userId) {
       query.userId = String(userId).trim();
@@ -346,7 +356,7 @@ router.get("/admin/:status", async (req, res) => {
       }
     }
 
-    console.log('🔍 Applied Query Filters:', JSON.stringify(query, null, 2));
+    console.log("🔍 Applied Query Filters:", JSON.stringify(query, null, 2));
 
     const [totalCount, requests] = await Promise.all([
       Verification.countDocuments(query),
@@ -357,7 +367,9 @@ router.get("/admin/:status", async (req, res) => {
         .lean(),
     ]);
 
-    console.log(`✅ Found ${totalCount} total results, returning ${requests.length} on page ${page}`);
+    console.log(
+      `✅ Found ${totalCount} total results, returning ${requests.length} on page ${page}`
+    );
 
     const enriched = requests.map((v) => {
       const photoSummary = {
@@ -465,7 +477,8 @@ router.get("/crop/:cropId/current-status", async (req, res) => {
 
       case "approved":
         canSubmit = false;
-        blockMessage = "Cannot submit new request. This crop is already verified.";
+        blockMessage =
+          "Cannot submit new request. This crop is already verified.";
         break;
 
       case "rejected":
@@ -505,7 +518,6 @@ router.get("/crop/:cropId/current-status", async (req, res) => {
     });
   }
 });
-
 
 // ============================================
 // 4. USER VERIFICATIONS (Specific path)
@@ -582,7 +594,7 @@ router.patch("/:id/review-images", async (req, res) => {
     // Leave all other photos unchanged (they stay in their current status)
     verification.photos.forEach((photo) => {
       const photoIdStr = photo._id.toString();
-      
+
       if (approvedPhotoIds.includes(photoIdStr)) {
         photo.status = "approved";
       } else if (rejectedIds.includes(photoIdStr)) {
@@ -627,12 +639,18 @@ router.patch("/:id/review-images", async (req, res) => {
   }
 });
 
-
 // 6. FINALIZE VERIFICATION (Specific action on :id)
+
 router.patch("/:id/finalize", async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, rejectionReason, rejectionNotes, reviewedBy, locationType } = req.body;
+    const {
+      status,
+      rejectionReason,
+      rejectionNotes,
+      reviewedBy,
+      locationType,
+    } = req.body;
 
     if (!status || !["approved", "rejected"].includes(status)) {
       return res.status(400).json({
@@ -649,32 +667,37 @@ router.patch("/:id/finalize", async (req, res) => {
     }
 
     const validRejectionReasons = [
-      'poor_photo_quality',
-      'face_not_visible',
-      'incorrect_location',
-      'insufficient_photos',
-      'duplicate_request',
-      'crop_mismatch',
-      'fake_or_manipulated',
-      'incomplete_information',
-      'suspicious_activity',
-      'photo_too_dark',
-      'photo_not_clear',
-      'photo_not_focused',
-      'partial_crop_visible',
-      'camera_angle_incorrect',
-      'photo_contains_obstructions',
-      'wrong_crop_uploaded',
-      'crop_stage_mismatch',
-      'crop_area_not_clear',
-      'crop_not_identifiable',
-      'other'
+      "poor_photo_quality",
+      "face_not_visible",
+      "incorrect_location",
+      "insufficient_photos",
+      "duplicate_request",
+      "crop_mismatch",
+      "fake_or_manipulated",
+      "incomplete_information",
+      "suspicious_activity",
+      "photo_too_dark",
+      "photo_not_clear",
+      "photo_not_focused",
+      "partial_crop_visible",
+      "camera_angle_incorrect",
+      "photo_contains_obstructions",
+      "wrong_crop_uploaded",
+      "crop_stage_mismatch",
+      "crop_area_not_clear",
+      "crop_not_identifiable",
+      "other",
     ];
 
-    if (status === "rejected" && !validRejectionReasons.includes(rejectionReason)) {
+    if (
+      status === "rejected" &&
+      !validRejectionReasons.includes(rejectionReason)
+    ) {
       return res.status(400).json({
         statusCode: 400,
-        message: `Invalid rejection reason. Must be one of: ${validRejectionReasons.join(', ')}`,
+        message: `Invalid rejection reason. Must be one of: ${validRejectionReasons.join(
+          ", "
+        )}`,
       });
     }
 
@@ -743,48 +766,142 @@ router.patch("/:id/finalize", async (req, res) => {
 
     await verification.save();
 
-    // 🆕 UPDATED: PATCH CROP API - Update images and location if there are approved photos
-    // This now runs for BOTH approved and rejected verifications, as long as there are approved photos
+    // PATCH CROP API - Update images and location if there are approved photos
     let cropUpdateResult = null;
     if (approvedPhotos.length > 0) {
       try {
         const updatePayload = {
-          images: approvedPhotos.map(photo => photo.url),
+          images: approvedPhotos.map((photo) => photo.url),
           coordinates: [
             verification.location.coordinates[0], // longitude
-            verification.location.coordinates[1]  // latitude
-          ]
+            verification.location.coordinates[1], // latitude
+          ],
         };
 
-        console.log(`📤 Patching crop ${verification.cropId} with approved images and location (Verification Status: ${status}):`, updatePayload);
+        console.log(
+          `📤 Patching crop ${verification.cropId} with approved images and location (Verification Status: ${status}):`,
+          updatePayload
+        );
 
         const cropUpdateResponse = await axios.patch(
           `${CROP_API_URL}/crop/${verification.cropId}/images-location`,
           updatePayload,
           {
             headers: {
-              'Content-Type': 'application/json'
-            }
+              "Content-Type": "application/json",
+            },
           }
         );
 
         cropUpdateResult = cropUpdateResponse.data;
-        console.log(`✅ Successfully updated crop ${verification.cropId} with ${approvedPhotos.length} approved photo(s):`, cropUpdateResult);
-
+        console.log(
+          `✅ Successfully updated crop ${verification.cropId} with ${approvedPhotos.length} approved photo(s):`,
+          cropUpdateResult
+        );
       } catch (cropUpdateError) {
-        console.error(`❌ Error updating crop ${verification.cropId}:`, cropUpdateError.message);
-        
-        // Log the error but don't fail the entire finalization
-        // The verification is still saved successfully
-        console.warn(`⚠️ Verification finalized (${status}) but crop update failed for cropId: ${verification.cropId}`);
+        console.error(
+          `❌ Error updating crop ${verification.cropId}:`,
+          cropUpdateError.message
+        );
+        console.warn(
+          `⚠️ Verification finalized (${status}) but crop update failed for cropId: ${verification.cropId}`
+        );
       }
     } else {
-      console.log(`ℹ️ No approved photos found for verification ${verification._id}. Skipping crop API update.`);
+      console.log(
+        `ℹ️ No approved photos found for verification ${verification._id}. Skipping crop API update.`
+      );
+    }
+
+    // 🆕 SEND WHATSAPP NOTIFICATION
+    let whatsappResult = null;
+
+    if (verification.phone) {
+      try {
+        if (status === "approved") {
+          // Send approval notification
+          console.log(
+            `📱 Sending approval WhatsApp to ${verification.phone}...`
+          );
+
+          whatsappResult = await whatsappService.sendApprovalNotification({
+            phone: verification.phone,
+            fullName: verification.fullName,
+            requestId: verification.requestId,
+            cropName: verification.cropName,
+            location: {
+              village: verification.village,
+              taluk: verification.taluk,
+              district: verification.district,
+            },
+            reviewedAt: verification.reviewedAt,
+          });
+
+          if (whatsappResult.success) {
+            console.log(
+              `✅ Approval WhatsApp sent successfully to ${verification.phone}`
+            );
+          } else {
+            console.warn(
+              `⚠️ Failed to send approval WhatsApp:`,
+              whatsappResult.error
+            );
+          }
+        } else if (status === "rejected") {
+          // Send rejection notification with cropId for dynamic button
+          console.log(
+            `📱 Sending rejection WhatsApp to ${verification.phone}...`
+          );
+
+          whatsappResult = await whatsappService.sendRejectionNotification({
+            phone: verification.phone,
+            fullName: verification.fullName,
+            requestId: verification.requestId,
+            cropName: verification.cropName,
+            cropId: verification.cropId, // ✅ cropId for dynamic verification link button
+            rejectionReason: verification.rejectionReason,
+            rejectionNotes: verification.rejectionNotes,
+          });
+
+          if (whatsappResult.success) {
+            console.log(
+              `✅ Rejection WhatsApp sent successfully to ${verification.phone}`
+            );
+            console.log(
+              `Response:`,
+              JSON.stringify(whatsappResult.data, null, 2)
+            );
+          } else {
+            console.error(
+              `❌ Failed to send rejection WhatsApp to ${verification.phone}`
+            );
+            console.error(
+              `Error:`,
+              JSON.stringify(whatsappResult.error, null, 2)
+            );
+          }
+        }
+      } catch (whatsappError) {
+        console.error(
+          `❌ Error sending WhatsApp notification:`,
+          whatsappError.message
+        );
+        // Don't fail the entire request if WhatsApp fails
+        // The verification is already saved successfully
+      }
+    } else {
+      console.warn(
+        `⚠️ No phone number available for verification ${verification._id}. Skipping WhatsApp notification.`
+      );
     }
 
     res.json({
       statusCode: 200,
-      message: `Verification request ${status} successfully${approvedPhotos.length > 0 ? ` and ${approvedPhotos.length} photo(s) updated in crop` : ''}`,
+      message: `Verification request ${status} successfully${
+        approvedPhotos.length > 0
+          ? ` and ${approvedPhotos.length} photo(s) updated in crop`
+          : ""
+      }`,
       data: {
         id: verification._id,
         userId: verification.userId,
@@ -798,8 +915,11 @@ router.patch("/:id/finalize", async (req, res) => {
         locationType: verification.location.locationType,
         photos: verification.photos,
         approvedPhotosCount: approvedPhotos.length,
-        cropUpdateResult: cropUpdateResult, // Include the crop API response
-        cropUpdated: cropUpdateResult !== null, // Boolean flag to indicate if crop was updated
+        cropUpdateResult: cropUpdateResult,
+        cropUpdated: cropUpdateResult !== null,
+        // 🆕 WhatsApp notification status
+        whatsappSent: whatsappResult?.success || false,
+        whatsappResult: whatsappResult,
       },
     });
   } catch (error) {
@@ -812,9 +932,8 @@ router.patch("/:id/finalize", async (req, res) => {
   }
 });
 
-// ============================================
 // 7. UPDATE LOCATION TYPE (Specific action on :id)
-// ============================================
+
 router.patch("/:id/update-location-type", async (req, res) => {
   try {
     const { id } = req.params;
@@ -896,7 +1015,7 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-router.get('/crop/:cropId', async (req, res) => {
+router.get("/crop/:cropId", async (req, res) => {
   try {
     const { cropId } = req.params;
 
@@ -906,7 +1025,7 @@ router.get('/crop/:cropId', async (req, res) => {
     if (!verification) {
       return res.status(404).json({
         success: false,
-        message: 'Verification not found for this crop ID'
+        message: "Verification not found for this crop ID",
       });
     }
 
@@ -915,30 +1034,27 @@ router.get('/crop/:cropId', async (req, res) => {
       success: true,
       data: {
         // verification: verification,
-        photos: verification.photos.map(photo => ({
+        photos: verification.photos.map((photo) => ({
           url: photo.url,
           status: photo.status,
-          id: photo._id
+          id: photo._id,
         })),
         location: {
           type: verification.location.type,
           coordinates: verification.location.coordinates,
-          locationType: verification.location.locationType || null
+          locationType: verification.location.locationType || null,
         },
         verificationStatus: verification.status,
-      }
+      },
     });
-
   } catch (error) {
-    console.error('Error fetching verification data:', error);
+    console.error("Error fetching verification data:", error);
     res.status(500).json({
       success: false,
-      message: 'Server error while fetching crop data',
-      error: error.message
+      message: "Server error while fetching crop data",
+      error: error.message,
     });
   }
 });
-
-
 
 module.exports = router;
